@@ -1,0 +1,67 @@
+---
+title: "Computing Data Access Quality Metrics with Real Data / Code"
+author: "James Wagner"
+date: "2/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidycensus)
+library(tidyverse)
+library(kableExtra)
+```
+
+## Identify the Appropriate Population Estimates
+
+This demonstration will show **how to use population estimates to compare to a list sampling frame to check for coverage of the target population**. The population estimates come from a high quality survey with a very large sample -- the American Community Survey. The sample frame has is a list of persons 65 years of age and older. We have counts of the number of persons on the list in each US state.
+
+We will be calculating **coverage ratios**. That is, we will calculate *the number of sampling frame elements in each state and then divide that number by the estimated total number of persons 65+ in each state*.
+
+First, let **load information about the American Community Survey (ACS) variables** using the tidycensus package. ACS are large and complicated data. We first pull ACS metadata, including variable names, labels, and concepts. The ``concepts'' are helpful for finding variables of interest.
+
+```{r cars}
+all_vars_acs5 <- 
+  load_variables(year = 2017, dataset = "acs5")
+all_vars_acs5 %>% 
+  filter(concept == "SEX BY AGE")
+```
+
+## Pull the Variables of Interest
+
+We found the variables that include persons age 65+ and we have the variable names. The next step is to **pull the variables from ACS, then sum them up to totals**. It is also possible break it down by sex or age groups, then by state and compare to totals from the sampling frame -- assuming sex, age, and state are also available on the sampling frame.
+
+For this example, we have the state the person resides in on the sampling frame. We will focus on **coverage ratios by state**.
+
+```{r getvars, echo=FALSE}
+vars_acs<-c("B01001_020","B01001_021","B01001_022","B01001_023","B01001_024","B01001_025",
+           "B01001_044","B01001_045","B01001_046","B01001_047","B01001_048","B01001_049")
+df_acs <-
+  get_acs(
+    geography = "state", 
+    variables = vars_acs, 
+    year = 2017
+  )
+state_ests<- df_acs %>%
+   group_by(NAME) %>%
+   summarise(TotPop_65Plus = sum(estimate))
+```
+
+## Calculate and Report Coverage Ratios
+
+The next step is to **merge the totals from the ACS to the totals from the sampling frame for comparison**. Once we have these, we can calculate a ``coverage ratio.''
+
+A couple of words on the coverage ratio. These aren't perfect. It is likely that the population was different between the times of the ACS data and the time the sampling frame was created. Further, it is possible that the sampling frame includes ineligible units (e.g. persons under 65 years of age) and duplicates. 
+
+Most of the coverage ratios are less than 1.0. However, there are some that are greater than 1.0. This could occur when the population changed between the time frames of the ACS and the creation of the sampling frame, or due to ineligibles and duplicates on the frame.
+
+
+```{r checktots, echo=FALSE}
+frame_counts_bystate<-read.csv(file="c:/users/jw/Dropbox (University of Michigan)/Teaching/RSD Short Courses/MOOC/Course 2/frame_counts_bystate.csv")
+combined<-merge(state_ests,frame_counts_bystate,by.x="NAME",by.y="State")
+combined$coverage_ratio<-combined$Frame_Count/combined$TotPop_65Plus
+combined[,c(-3)] %>%
+    kbl() %>%
+   kable_styling()
+ggplot(combined, aes(x=coverage_ratio)) + geom_histogram()
+```

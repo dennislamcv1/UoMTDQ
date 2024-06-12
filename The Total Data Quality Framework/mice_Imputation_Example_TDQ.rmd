@@ -1,0 +1,77 @@
+---
+title: "Demonstration of the Use of MICE for Imputing Missing Values"
+author: "James Wagner"
+date: "3/8/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mice)
+library(VIM)
+```
+
+## Load the Data
+
+We will be using the Titanic training data set from Kaggle.com. Age is missing for some cases.
+  
+
+
+```{r loadingdata}
+train <- read.csv("C:/Users/jw/Dropbox (University of Michigan)/Teaching/RSD Short Courses/Course Materials/00 TDQ/Examples/train.csv")
+```
+
+## Missing Data Pattern
+
+The first step is to review the missing data pattern. For a relatively small dataset, the mice package includes a function that will plot the missing data. Large datasets might require a different strategy for visualizing missing data. The VIM package is an alternative that will aid in visualization of missing data patterns. 
+
+```{r patterns, echo=TRUE}
+md.pattern(train) 
+train_aggr = aggr(train, col=mdc(1:2), numbers=TRUE, sortVars=TRUE, labels=names(train), cex.axis=.7, gap=3, ylab=c("Proportion of missingness","Missingness Pattern"))
+
+```
+
+## Create Imputed Values
+
+The mice package is used to create the imputed values. We remove some variables that aren't relevant for imputation (e.g. the passenger's name, train[,-c(1,4,9,11,13)]). The number of imputed values is set to 5 (m=5). As a rule of thumb, the larger the rate of missing data, the more imputations are necessary to insure reliable imputed means. We ask for the maximum number of iterations to be 50 (maxit=50). The imputation models are run across all variables with missing values, subsituting imputed values in iterations after the maximum number of iterations have been run. The method of imputation is predictive mean matching (meth='pmm'). We set a seed so that the same imputations will be achieved each time we run this program. Finally, we turn off the printing of updates to the console (print=FALSE). Turning on those updates may be helpful when attempting to diagnose issues.
+
+```{r impute, echo=TRUE}
+#Create a missing data indicator
+train$ry <- ifelse(is.na(train$Age), 1, 0)
+train.impute <- mice(train[,-c(1,4,9,11,13)],m=5,maxit=50,meth='pmm',seed=500,print=FALSE)
+```
+
+## Review the Imputed Values
+
+It is important to review the imputed values. This step will insure that the imputed values are plausible and uncover potential problems with the model or other specifications used in the creation of the imputations.
+
+The following are a print of the list of imputed values, a density plot showing the distribution of each of the 5 sets of imputed values, the mean of the observed data, and the mean of each of the fully-imputed datasets. If the imputations lead to large changes in the estimated mean, it would be good to understand why this has occured.
+
+```{r review_imps, echo=TRUE}
+train.impute$imp$Age
+densityplot(train.impute)
+mean(train$Age,na.rm=TRUE)
+summary(with(train.impute, mean(Age)))
+```
+
+## Estimation
+
+Now we can create a fully-imputed data frame (imp1). Or, we can use the appropriate multiple imputation estimation procedures. In this example, we are using logistic regression to estimate the probability of surviving the sinking of the Titanic. 
+
+The multiple imputation estimates return the average within (ubar) and between imputation (b) variance. These are combined into a singel estimate of the variance (t). Riv is the relative increase in variance due to missing data. Lambda is the proportion of variance due to missing data. FMI is the fraction of missing information. A simpler form of the output is also available.
+
+```{r estimation, echo=TRUE}
+imp1<-complete(train.impute,action=1L)
+fit1 <- with(train.impute, glm(Survived ~ Pclass + Sex + Age + Fare,family=binomial), print=F)
+fit1.est<-pool(fit1)
+fit1.est
+summary(fit1.est)
+```
+
+For comparison purposes, we estimate the same model on the observed data only.  Notice that the estimated coefficients have changed in small, but potentially important ways. The standard errors are also larger for the imputed dataset, reflecting the uncertainty about the missing values.
+
+```{r comparison, echo=FALSE}
+#For comparison, the same model on observed data only
+obs.model<-glm(Survived ~ Pclass + Sex + Age + Fare,data=train,family=binomial)
+summary(obs.model)
+```
