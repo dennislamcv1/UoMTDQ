@@ -1,0 +1,175 @@
+---
+title: "Demonstration of Weighting Adjustments for Missing Values"
+author: "James Wagner"
+date: "12/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(vcd)
+library(survey)
+library(PracTools)
+library(tidyverse)
+```
+
+## Survey Nonresponse
+
+In this demonstration, we are going to use the simulated survey data set that we used in a previous demonstration. Our focus today will be on addressing missing data using weighting adjustments. 
+
+The two types of adjustments we will examine are sample-based nonresponse adjustments and poststratification. Sample-based **nonresponse adjustments** are meant to weight the respondents to look like the *sample* along select dimensions. **Poststratification** is a type of calibration adjustment that will weight the respondents to look like the *population* along select dimensions.
+
+The first step is to read the data set. The data set is released as part of the book, *Handbook of Nonresponse in Household Surveys*. The data set can be downloaded from this link:
+  
+  http://survey-nonresponse.com/download.html
+
+The data set includes a number of variables available from the sampling frame for all cases -- including both respondents and nonrespondents. 
+
+```{r gps}
+gps<-read.csv("C:/Users/jw/Dropbox (University of Michigan)/Teaching/Stat Methods II/2021 Winter/Lectures/07 Statistical Models/gps.csv")
+```
+
+## Examine Predictors of Nonresponse
+
+We are looking for predictors of nonresponse. Ideally, these would also be related to the survey outcome variables. We start by looking at the relationship of the variables on the frame with several important survey variables. We will examine four survey variables: 
+1. `HEALTH`: General health condition, 1=Very Good, 2=Good, 3=Reasonable, 4=Varied, 5=Bad
+2. `POLITICS`: Is interested in politics, 1=Very interested...4=Not at all interested
+3. `EMPLOYED`: Employment situation, 1=Work 12 hours or more, 2=Work less than 12 hours, 3=does not work
+4. `OWNHOUSE`" Owns house 1=Yes, 2=No
+
+We will use only a few of the variables available from the sample frame. In practice, we would want to examine all the available data.
+
+First, some bivariate analyses. We can look at the association between predictors (from the sampling frame) and outcomes (from the survey). As an example, we look at the association of self-reported health status `HEALTH` with urbanicity `URBAN`.
+
+```{r predictors1 }
+gps$HEALTH<-factor(gps$HEALTH,levels=c(1,2,3,4,5),labels=c("VG","G","R","V","B"))
+gps$URBAN<-factor(gps$URBAN,levels=c(1,2,3,4,5),labels=c("VS","S","F","L","N"))
+health.urban.tab<-table(gps[c("HEALTH","URBAN")])
+chisq.test(health.urban.tab)
+assoc(health.urban.tab,labeling_args=list(rot_labels=c(0,0,0,0)))
+```
+
+From this chi square test and the plot of the residuals we can see that there is an association between health and urbanicity. The values for urbanicity are "very strong", "strong", "fairly", "little" or "not". The values for health are "very good", "good", "reasonable", "varied", and "bad". from the residuals, it appears that urban persons are more likely to have "bad" health while person living in areas that are "not" urban are more likely to have "good health". 
+
+This association is useful as we have the urbanicity for all persons in the sample, but we only have the self-reported health for persons who respond to the survey. We can correct for imbalances between respondents and nonrespondents across categories of `URBAN` with the goal of also addressing the associated (but unobserved) imbalances with `HEALTH`.
+
+Once we have completed bivariate analyses, we can move to multivariate analyses. For example, we could look at predictors of whether the respondent owns their house `OWNHOUSE` in a logistic regression model. 
+
+```{r predictors2 }
+gps$OWNHOUSE[gps$OWNHOUSE==2]<-0
+ownhouse.glm<-glm(OWNHOUSE~as.factor(GENDER) + as.factor(URBAN) + as.factor(AGE3) + 
+                    as.factor(REGION) + as.factor(HASJOB) + as.factor(MARRIED) + 
+                    as.factor(CHILDREN),data=gps,
+                  family=binomial)
+summary(ownhouse.glm)
+```
+
+It looks like these variables are all useful predictors of `OWNHOUSE`. 
+
+## Nonresponse Model
+
+Once we have performed these analyses over the four survey variables of interest and identified a relevant subset of cases to include in the nonresponse modeling, we can start building a model for response.
+
+
+```{r nrmodel }
+nrmodel.glm<-glm(RESPONSE~as.factor(GENDER) + as.factor(URBAN) + as.factor(AGE3) + 
+                    as.factor(REGION) + as.factor(HASJOB) + as.factor(MARRIED) + 
+                    as.factor(CHILDREN),data=gps,
+                  family=binomial(link="logit"))
+summary(nrmodel.glm)
+```
+From these results, it appears there are several significant predictors of nonresponse in this set of predictors. The regions (`REGION`) and urbanicities (`URBAN`) have large variation in response. Also important is marital status (`MARRIED`) and whether the sampled person has a job (`HASJOB`). The latter is important as employment status is one of our survey outcomes. We find that persons who do not have a job respond at lower rates. Finally, although age (`AGE3`) is not statistically significant, we keep it in the model as age is often related to response probabilities and removing it is assuming that it is unrelated to response.
+
+## Nonresponse Adjustments
+
+These estimated response propensities may be subject to misspecification error. They are also subject to sampling error. In order to 'smooth' some of these errors, we often elect to create strata based on the estimates propensity and then use the inverse of the response rate in each stratum as a nonresponse adjustment.
+
+In order to implement this step, we will use the `pclass` function from the `PracTools` package. The syntax specifies a formula in the same format as the `glm` function, specifies that the analysis should be unweighted (`type="unwtgd"`), notes that the link function is the logit, and asks that 10 propensity strata be returned (`numcl=10`).
+
+```{r nrstrata }
+gps$p.class<-pclass(formula=RESPONSE~as.factor(GENDER) + as.factor(URBAN) + as.factor(AGE3) + 
+                    as.factor(REGION) + as.factor(HASJOB) + as.factor(MARRIED) + 
+                    as.factor(CHILDREN),data=gps,type="unwtd",
+                    link="logit",numcl=10)$p.class
+```
+
+Once we have these classes, we can use the inverse response rate in each class (or stratum) as a nonresponse adjustment. The sum of these adjustments across the responding units should be equal to the sample size. Also, the weighted composition of the respondents -- with respect to the predictors included in the nonresponse model -- should be closer to the sample.
+
+
+```{r nrwgt }
+mean.nr<-aggregate(x=gps$RESPONSE,by=list(gps$p.class),FUN=mean)
+names(mean.nr)<-c("p.class","mean.nr")
+gps <- left_join(gps, mean.nr, 
+              by = c("p.class" = "p.class"))
+gps$NRWGT<-1/gps$mean.nr
+```
+
+## Quality Checks
+
+Now, we will do some quality checks. We will look at the values of `NRWGT` to be sure they are correct. Then we will check the sum of that weight for responders to be sure that it is close to our full sample size of 32,019.
+
+```{r qc }
+table(gps$NRWGT)
+hist(gps$NRWGT)
+gps%>% filter(RESPONSE==1) %>% summarise(sum(NRWGT))
+```
+
+The sum of the nonresponse adjustments is equal to the full sample size. This is as expected.
+
+## Weighted Analyses
+
+Now we will use the nonresponse adjustment weight in the analysis of the survey variables we looked at earlier. First, we will look at an unweighted table for comparison, then the nonresponse-adjusted table.
+
+```{r nranalysis }
+gps.resp<-gps[which(gps$RESPONSE==1),]
+health.tab<-table(gps$HEALTH)
+prop.table(health.tab)
+gps.design<-svydesign(id=~1, weights=~NRWGT, data=gps.resp)
+svytable(~HEALTH,design=gps.design,Ntotal=1)
+
+employed.tab<-table(gps$EMPLOYED)
+prop.table(employed.tab)
+svytable(~EMPLOYED,design=gps.design,Ntotal=1)
+
+ownhouse.tab<-table(gps$OWNHOUSE)
+prop.table(ownhouse.tab)
+svytable(~OWNHOUSE,design=gps.design,Ntotal=1)
+```
+
+Here we find that the nonresponse adjustments do not make much change to estimates of self-reported health status. However, there are significant changes to estimates of employment status and whether or not the home is owned (vs rented).
+
+## Poststratification
+
+Finally, we turn to a class of adjustments known as **poststratification**. Like stratification, poststratification makes use of information about the population to produce expected reductions in variance estimates. For example, sampling alone could produce variation in the age distribution of a sample. Poststratification brings the sample proportions back to the population proportions. This reduces sampling variance (data source quality). 
+
+In  practice, poststratification is also used to reduce biases resulting from coverage error (data access quality) and nonresponse error (data missingness).
+
+Here, we will use a simple poststratification using only the age information from respondents (`AGE3`) and the population distribution. We will use the `postStratify` function from the `survey` package to calculate the poststratification factors. Recall that poststratification sets the the respondent totals or proportions to match the population totals or proportions for the poststrata. Therefore, the poststrata can only be created from variables for which population totals or proportions are available.
+
+
+```{r pswgt }
+pop.dist<-data.frame(AGE3=c(1,2,3),Freq=c(5032689,3872489,3264888))
+gps.design.ps<-postStratify(gps.design,~AGE3,pop.dist)
+svytable(~AGE3,gps.design.ps)
+```
+
+The last table just shows that the poststratification worked. The estimates from respondents now match the population totals.
+
+Next, we will look at the same survey estimates using the poststratified estimator.
+
+```{r psanalysis, echo=FALSE}
+svytable(~HEALTH,design=gps.design,Ntotal=1)
+svytable(~HEALTH,design=gps.design.ps,Ntotal=1)
+
+svytable(~EMPLOYED,design=gps.design,Ntotal=1)
+svytable(~EMPLOYED,design=gps.design.ps,Ntotal=1)
+
+svytable(~OWNHOUSE,design=gps.design,Ntotal=1)
+svytable(~OWNHOUSE,design=gps.design.ps,Ntotal=1)
+```
+
+We haven't looked at the variance estimates. Our focus has been on the impact of missingness on estimates. We would expect that poststratification would reduce variance estimates.
+
+We did observe that for some estimates, nonresponse adjustments and poststratification can make a difference. Understanding why this occurs is an important step for two reasons. First, it provides a useful quality control step to make sure that the weighting approach is reasonable. Second, in planning future survey data collections, it may be useful to know which dimensions of the sample were underrepresented due to nonresponse. 
+
+In this case, it looks like the dimensions included in the nonresponse model did make a difference. We saw relatively large changes in estimates of employment status and whether the housing unit is owned. The poststratification based on age produced smaller, but still important changes in estimates.
